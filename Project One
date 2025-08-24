@@ -1,0 +1,275 @@
+Common Model (used by all three ADTs)
+STRUCT Course
+    courseNumber : STRING          // e.g., "CS200"
+    title        : STRING          // e.g., "Foundations of CS"
+    prereqs      : LIST<STRING>    // e.g., ["CS100"]
+
+FUNCTION ParseLineToCourse(line : STRING) RETURNS Course or ERROR
+    tokens <- SPLIT(line, ',')
+    FOR i IN 0..tokens.size-1: tokens[i] <- TRIM(tokens[i])
+
+    IF tokens.size < 2:
+        RAISE FORMAT_ERROR("expected courseNumber,title[,prereq1,...]")
+
+    c <- new Course
+    c.courseNumber <- tokens[0]
+    c.title        <- tokens[1]
+    c.prereqs      <- empty list
+    FOR i FROM 2 TO tokens.size-1:
+        IF tokens[i] != "": APPEND tokens[i] TO c.prereqs
+    RETURN c
+Load + Validate + Build (Vector)
+FUNCTION LoadCourses_Vector(filename : STRING) RETURNS VECTOR<Course>
+    OPEN file FOR reading
+    IF open fails: RAISE IO_ERROR
+
+    coursesVec <- empty VECTOR<Course>
+    lineNum <- 0
+    seen    <- MAP<STRING,BOOL>  // track course existence
+
+    // first pass: parse + minimally validate
+    FOR EACH rawLine IN file:
+        lineNum <- lineNum + 1
+        line <- TRIM(rawLine)
+        IF line == "" OR line STARTS_WITH "#": CONTINUE
+
+        c <- ParseLineToCourse(line)       // may RAISE FORMAT_ERROR
+        PUSH_BACK coursesVec, c
+        seen[c.courseNumber] <- TRUE
+
+    // second pass: prereq existence check
+    FOR EACH c IN coursesVec:
+        FOR EACH p IN c.prereqs:
+            IF NOT seen.CONTAINS(p):
+                PRINT "format error: missing prerequisite '" + p + "' for " + c.courseNumber
+
+    CLOSE file
+    RETURN coursesVec
+
+Menu (Vector)
+FUNCTION Menu_Vector()
+    vec <- EMPTY
+    DO
+        PRINT "1. Load  2. Print Sorted  3. Print One  9. Exit"
+        choice <- READ_INT()
+        SWITCH choice:
+            CASE 1:
+                path <- PROMPT("enter file path:")
+                vec <- LoadCourses_Vector(path)
+            CASE 2:
+                // sort by courseNumber then print
+                tmp <- COPY(vec)
+                SORT tmp BY courseNumber ASC
+                FOR EACH c IN tmp:
+                    PRINT c.courseNumber + ", " + c.title
+            CASE 3:
+                key <- PROMPT("enter course number:")
+                found <- FALSE
+                FOR EACH c IN vec:
+                    IF c.courseNumber == key:
+                        PRINT c.courseNumber + ", " + c.title
+                        IF c.prereqs EMPTY: PRINT "prerequisites: none"
+                        ELSE PRINT "prerequisites: " + JOIN(c.prereqs, ", ")
+                        found <- TRUE
+                        BREAK
+                IF NOT found: PRINT "course not found"
+    WHILE choice != 9
+
+Load + Validate + Build (Hash)
+CLASS HashTable
+    buckets : ARRAY<LIST<Course>>
+    METHOD Put(c : Course)
+        i <- HASH(c.courseNumber) % buckets.size
+        // replace if key exists, else append
+        FOR EACH ref IN buckets[i]:
+            IF ref.courseNumber == c.courseNumber: ref <- c; RETURN
+        APPEND c TO buckets[i]
+
+    METHOD Get(key : STRING) RETURNS Course or NULL
+        i <- HASH(key) % buckets.size
+        FOR EACH c IN buckets[i]:
+            IF c.courseNumber == key: RETURN c
+        RETURN NULL
+
+FUNCTION LoadCourses_Hash(filename : STRING) RETURNS HashTable
+    OPEN file; IF fail -> IO_ERROR
+    ht <- new HashTable(capacity = PRIME ~ 1021)
+    seen <- MAP<STRING,BOOL>
+
+    FOR EACH rawLine IN file:
+        line <- TRIM(rawLine)
+        IF line == "" OR line STARTS_WITH "#": CONTINUE
+        c <- ParseLineToCourse(line)
+        ht.Put(c)
+        seen[c.courseNumber] <- TRUE
+
+    // validate prereqs exist
+    // iterate over all buckets and entries
+    FOR EACH bucket IN ht.buckets:
+        FOR EACH c IN bucket:
+            FOR EACH p IN c.prereqs:
+                IF NOT seen.CONTAINS(p):
+                    PRINT "format error: missing prerequisite '" + p + "' for " + c.courseNumber
+
+    CLOSE file
+    RETURN ht
+Menu (Hash)
+FUNCTION Menu_Hash()
+    ht <- EMPTY
+    DO
+        PRINT "1. Load  2. Print Sorted  3. Print One  9. Exit"
+        choice <- READ_INT()
+        SWITCH choice:
+            CASE 1:
+                path <- PROMPT("enter file path:")
+                ht <- LoadCourses_Hash(path)
+            CASE 2:
+                // gather all, sort by courseNumber, print
+                all <- EMPTY LIST<Course>
+                FOR EACH bucket IN ht.buckets:
+                    FOR EACH c IN bucket: APPEND c TO all
+                SORT all BY courseNumber ASC
+                FOR EACH c IN all:
+                    PRINT c.courseNumber + ", " + c.title
+            CASE 3:
+                key <- PROMPT("enter course number:")
+                c <- ht.Get(key)
+                IF c == NULL: PRINT "course not found"
+                ELSE:
+                    PRINT c.courseNumber + ", " + c.title
+                    IF c.prereqs EMPTY: PRINT "prerequisites: none"
+                    ELSE PRINT "prerequisites: " + JOIN(c.prereqs, ", ")
+    WHILE choice != 9
+
+Load + Validate + Build (BST)
+STRUCT Node
+    data : Course
+    left : Node*
+    right: Node*
+
+CLASS BST
+    root : Node*
+
+    METHOD Insert(c : Course)
+        IF root == NULL: root <- new Node(c); RETURN
+        cur <- root
+        WHILE TRUE:
+            IF c.courseNumber < cur.data.courseNumber:
+                IF cur.left == NULL: cur.left <- new Node(c); RETURN
+                ELSE cur <- cur.left
+            ELSE IF c.courseNumber > cur.data.courseNumber:
+                IF cur.right == NULL: cur.right <- new Node(c); RETURN
+                ELSE cur <- cur.right
+            ELSE:
+                cur.data <- c; RETURN       // replace on duplicate
+
+    METHOD Search(key : STRING) RETURNS Course or NULL
+        cur <- root
+        WHILE cur != NULL:
+            IF key == cur.data.courseNumber: RETURN cur.data
+            IF key < cur.data.courseNumber: cur <- cur.left
+            ELSE: cur <- cur.right
+        RETURN NULL
+
+    METHOD InOrderVisit(node, visitFn)
+        IF node == NULL: RETURN
+        InOrderVisit(node.left, visitFn)
+        visitFn(node.data)
+        InOrderVisit(node.right, visitFn)
+
+FUNCTION LoadCourses_BST(filename : STRING) RETURNS BST
+    OPEN file; IF fail -> IO_ERROR
+    bst  <- new BST
+    seen <- MAP<STRING,BOOL>
+
+    FOR EACH rawLine IN file:
+        line <- TRIM(rawLine)
+        IF line == "" OR line STARTS_WITH "#": CONTINUE
+        c <- ParseLineToCourse(line)
+        bst.Insert(c)
+        seen[c.courseNumber] <- TRUE
+
+    // validate prereqs exist: traverse inorder and check
+    FUNCTION CheckCourse(c:Course):
+        FOR EACH p IN c.prereqs:
+            IF NOT seen.CONTAINS(p):
+                PRINT "format error: missing prerequisite '" + p + "' for " + c.courseNumber
+    bst.InOrderVisit(bst.root, CheckCourse)
+
+    CLOSE file
+    RETURN bst
+
+Menu (BST)
+FUNCTION Menu_BST()
+    bst <- EMPTY
+    DO
+        PRINT "1. Load  2. Print Sorted  3. Print One  9. Exit"
+        choice <- READ_INT()
+        SWITCH choice:
+            CASE 1:
+                path <- PROMPT("enter file path:")
+                bst <- LoadCourses_BST(path)
+            CASE 2:
+                FUNCTION VisitPrint(c:Course):
+                    PRINT c.courseNumber + ", " + c.title
+                IF bst.root == NULL: PRINT "no courses loaded"
+                ELSE bst.InOrderVisit(bst.root, VisitPrint)
+            CASE 3:
+                key <- PROMPT("enter course number:")
+                c <- bst.Search(key)
+                IF c == NULL: PRINT "course not found"
+                ELSE:
+                    PRINT c.courseNumber + ", " + c.title
+                    IF c.prereqs EMPTY: PRINT "prerequisites: none"
+                    ELSE PRINT "prerequisites: " + JOIN(c.prereqs, ", ")
+    WHILE choice != 9
+
+
+Operation
+Vector
+Hash Table (separate chaining)
+Binary Search Tree (unbalanced)
+Parse file (tokenize each line)
+O(n) (one pass)
+O(n)
+O(n)
+Insert each course into structure
+O(1) amortized per push → O(n)
+O(1) avg per put → O(n); O(n²) worst if all collide
+O(log n) avg per insert → O(n log n); O(n²) worst if skewed
+Validate prereq existence
+O(n) with hash/map for “seen”
+O(n)
+O(n) (we used a map “seen”)
+Search for a course (by key)
+O(n) linear scan
+O(1) average; O(n) worst
+O(log n) average; O(n) worst
+Print all courses in alphanumeric order
+Sort then print: O(n log n) + O(n)
+Gather all + sort: O(n log n) + O(n)
+In-order traversal: O(n)
+Memory overhead
+Contiguous array, minimal overhead
+Buckets + nodes per entry (overhead)
+Node objects + 2 pointers per node
+
+
+
+Work shown (examples):
+	•	Vector load: for each of n lines, split/trim = constant work ⇒ n*1 = O(n); inserting via push_back amortized O(1) per element ⇒ O(n). 
+	•	Hash load: for each line, compute hash + insert to bucket = average O(1) ⇒ O(n); worst case all keys to one bucket gives chain length O(n) per insert ⇒ O(n²) (pathological). 
+	•	BST load (unbalanced): random-ish order gives expected height O(log n) ⇒ n * O(log n) = O(n log n); sorted input produces a chain (height O(n)) ⇒ O(n²). 
+	•	Search: vector scans n ⇒ O(n); hash probes expected constant ⇒ O(1) avg; bst descends height ⇒ O(log n) avg, O(n) worst. 
+	•	Print sorted: vector/hash must sort ⇒ O(n log n); bst gives sorted order by in-order ⇒ O(n).
+Pros, Cons, and Recommendation
+	•	Vector 
+	•	Pros: Easiest to implement; minimal memory overhead; fast sequential iteration. 
+	•	Cons: Slow search (O(n)); must sort for ordered output (O(n log n)) every time you print the list. 
+	•	Hash Table 
+	•	Pros: Fast lookup on average (O(1)); build is linear on average. 
+	•	Cons: No inherent order; you still must sort to print the course list (O(n log n) each time); worst-case collisions degrade to O(n) search and up to O(n²) on adversarial inserts; extra memory for buckets. 
+	•	Binary Search Tree (unbalanced) 
+	•	Pros: Search O(log n) average; printing sorted is O(n) via in-order traversal (no extra sort); natural ordering by key. 
+	•	Cons: Can degrade to O(n) search/inserts on sorted/skewed input; more pointer overhead than vector. 
+Recommendation: Use the Binary Search Tree for Project One. Advisors will frequently search for courses and print the full course list in order. A BST provides fast average-case lookups and linear-time ordered printing without re-sorting on every request. If balancing were allowed (AVL/Red-Black), the worst-case risks would be removed entirely; but even unbalanced, the BST best fits the access patterns described.
